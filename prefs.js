@@ -74,6 +74,72 @@ function cssHexString(css) {
     return rrggbb;
 }
 
+function setShortcut(settings) {
+    let shortcut_text = settings.get_string('shortcut-text');
+    let [key, mods] = Gtk.accelerator_parse(shortcut_text);
+
+    if (Gtk.accelerator_valid(key, mods)) {
+        let shortcut = Gtk.accelerator_name(key, mods);
+        settings.set_strv('shortcut', [shortcut]);
+    }
+    else {
+        settings.set_strv('shortcut', []);
+    }
+}
+
+function checkHotkeyPrefix(settings) {
+    settings.delay();
+
+    let hotkeyPrefix = settings.get_string('hotkey-prefix-text');
+    if (hotkeyPrefix == 'Super')
+       hotkeyPrefix = '<Super>';
+    else if (hotkeyPrefix == 'SuperAlt')
+       hotkeyPrefix = '<Super><Alt>';
+    let [, mods]       = Gtk.accelerator_parse(hotkeyPrefix);
+    let [, shift_mods] = Gtk.accelerator_parse('<Shift>' + hotkeyPrefix);
+    let [, ctrl_mods]  = Gtk.accelerator_parse('<Ctrl>'  + hotkeyPrefix);
+
+    let numHotkeys = 10;
+    for (let i = 1; i <= numHotkeys; i++) {
+        let number = i;
+        if (number == 10)
+            number = 0;
+        let key    = Gdk.keyval_from_name(number.toString());
+        let key_kp = Gdk.keyval_from_name('KP_' + number.toString());
+        if (Gtk.accelerator_valid(key, mods)) {
+            let shortcut    = Gtk.accelerator_name(key, mods);
+            let shortcut_kp = Gtk.accelerator_name(key_kp, mods);
+
+            // Setup shortcut strings
+            settings.set_strv('app-hotkey-'    + i, [shortcut]);
+            settings.set_strv('app-hotkey-kp-' + i, [shortcut_kp]);
+
+            // With <Shift>
+            shortcut    = Gtk.accelerator_name(key, shift_mods);
+            shortcut_kp = Gtk.accelerator_name(key_kp, shift_mods);
+            settings.set_strv('app-shift-hotkey-'    + i, [shortcut]);
+            settings.set_strv('app-shift-hotkey-kp-' + i, [shortcut_kp]);
+
+            // With <Control>
+            shortcut    = Gtk.accelerator_name(key, ctrl_mods);
+            shortcut_kp = Gtk.accelerator_name(key_kp, ctrl_mods);
+            settings.set_strv('app-ctrl-hotkey-'    + i, [shortcut]);
+            settings.set_strv('app-ctrl-hotkey-kp-' + i, [shortcut_kp]);
+        }
+        else {
+            // Reset default settings for the relevant keys if the
+            // accelerators are invalid
+            let keys = ['app-hotkey-' + i, 'app-shift-hotkey-' + i, 'app-ctrl-hotkey-' + i,  // Regular numbers
+                        'app-hotkey-kp-' + i, 'app-shift-hotkey-kp-' + i, 'app-ctrl-hotkey-kp-' + i]; // Key-pad numbers
+            keys.forEach(function(val) {
+                settings.set_value(val, settings.get_default_value(val));
+            }, this);
+        }
+    }
+
+    settings.apply();
+}
+
 const Settings = new Lang.Class({
     Name: 'DashToPanel.Settings',
 
@@ -86,7 +152,12 @@ const Settings = new Lang.Class({
         this._builder.set_translation_domain(Me.metadata['gettext-domain']);
         this._builder.add_from_file(Me.path + '/Settings.ui');
 
-        this.widget = this._builder.get_object('settings_notebook');
+        this.notebook = this._builder.get_object('settings_notebook');
+        this.viewport = new Gtk.Viewport();
+        this.viewport.add(this.notebook);
+        this.widget = new Gtk.ScrolledWindow();
+        this.widget.add(this.viewport);
+        
 
         // Timeout to delay the update of the settings
         this._panel_size_timeout = 0;
@@ -332,18 +403,81 @@ const Settings = new Lang.Class({
                             this._builder.get_object('show_window_previews_switch'),
                             'active',
                             Gio.SettingsBindFlags.DEFAULT);
-        this._settings.bind('show-window-previews',
-                            this._builder.get_object('preview_timeout_spinbutton'),
+       this._settings.bind('show-window-previews',
+                            this._builder.get_object('show_window_previews_button'),
                             'sensitive',
                             Gio.SettingsBindFlags.DEFAULT);
-        this._settings.bind('show-window-previews',
-                            this._builder.get_object('preview_timeout_label'),
+        this._settings.bind('show-favorites',
+                            this._builder.get_object('show_favorite_switch'),
+                            'active',
+                            Gio.SettingsBindFlags.DEFAULT);
+
+        this._builder.get_object('show_window_previews_button').connect('clicked', Lang.bind(this, function() {
+
+            let dialog = new Gtk.Dialog({ title: _('Window preview options'),
+                                          transient_for: this.widget.get_toplevel(),
+                                          use_header_bar: true,
+                                          modal: true });
+
+            // GTK+ leaves positive values for application-defined response ids.
+            // Use +1 for the reset action
+            dialog.add_button(_('Reset to defaults'), 1);
+
+            let box = this._builder.get_object('box_window_preview_options');
+            dialog.get_content_area().add(box);
+
+            this._builder.get_object('preview_timeout_spinbutton').set_value(this._settings.get_int('show-window-previews-timeout'));
+            this._builder.get_object('preview_timeout_spinbutton').connect('value-changed', Lang.bind (this, function(widget) {
+                this._settings.set_int('show-window-previews-timeout', widget.get_value());
+            }));
+
+            this._settings.bind('peek-mode',
+                            this._builder.get_object('peek_mode_switch'),
+                            'active',
+                            Gio.SettingsBindFlags.DEFAULT);
+            this._settings.bind('peek-mode',
+                            this._builder.get_object('listboxrow_enter_peek_mode_timeout'),
+                            'sensitive',
+                            Gio.SettingsBindFlags.DEFAULT);
+            this._settings.bind('peek-mode',
+                            this._builder.get_object('listboxrow_peek_mode_opacity'),
                             'sensitive',
                             Gio.SettingsBindFlags.DEFAULT);
 
-        this._builder.get_object('preview_timeout_spinbutton').set_value(this._settings.get_int('show-window-previews-timeout'));
-        this._builder.get_object('preview_timeout_spinbutton').connect('value-changed', Lang.bind (this, function(widget) {
-            this._settings.set_int('show-window-previews-timeout', widget.get_value());
+            this._builder.get_object('enter_peek_mode_timeout_spinbutton').set_value(this._settings.get_int('enter-peek-mode-timeout'));
+
+            this._builder.get_object('enter_peek_mode_timeout_spinbutton').connect('value-changed', Lang.bind (this, function(widget) {
+                this._settings.set_int('enter-peek-mode-timeout', widget.get_value());
+            }));
+
+            this._builder.get_object('peek_mode_opacity_spinbutton').set_value(this._settings.get_int('peek-mode-opacity'));
+
+            this._builder.get_object('peek_mode_opacity_spinbutton').connect('value-changed', Lang.bind (this, function(widget) {
+                this._settings.set_int('peek-mode-opacity', widget.get_value());
+            }));
+
+            dialog.connect('response', Lang.bind(this, function(dialog, id) {
+                if (id == 1) {
+                    // restore default settings
+                    this._settings.set_value('show-window-previews-timeout', this._settings.get_default_value('show-window-previews-timeout'));
+                    this._builder.get_object('preview_timeout_spinbutton').set_value(this._settings.get_int('show-window-previews-timeout'));
+
+                    this._settings.set_value('peek-mode', this._settings.get_default_value('peek-mode'));
+                    this._settings.set_value('enter-peek-mode-timeout', this._settings.get_default_value('enter-peek-mode-timeout'));
+                    this._builder.get_object('enter_peek_mode_timeout_spinbutton').set_value(this._settings.get_int('enter-peek-mode-timeout'));
+                    this._settings.set_value('peek-mode-opacity', this._settings.get_default_value('peek-mode-opacity'));
+                    this._builder.get_object('peek_mode_opacity_spinbutton').set_value(this._settings.get_int('peek-mode-opacity'));
+
+                } else {
+                    // remove the settings box so it doesn't get destroyed;
+                    dialog.get_content_area().remove(box);
+                    dialog.destroy();
+                }
+                return;
+            }));
+
+            dialog.show_all();
+
         }));
        
         this._settings.bind('isolate-workspaces',
@@ -432,6 +566,10 @@ const Settings = new Lang.Class({
                             'sensitive',
                             Gio.SettingsBindFlags.DEFAULT);
 
+        this._builder.get_object('overlay_combo').connect('changed', Lang.bind (this, function(widget) {
+            this._settings.set_string('hotkeys-overlay-combo', widget.get_active_id());
+        }));
+
         // Create dialog for number overlay options
         this._builder.get_object('overlay_button').connect('clicked', Lang.bind(this, function() {
 
@@ -447,12 +585,12 @@ const Settings = new Lang.Class({
             let box = this._builder.get_object('box_overlay_shortcut');
             dialog.get_content_area().add(box);
 
-            this._builder.get_object('overlay_switch').set_active(this._settings.get_boolean('hotkeys-overlay'));
-
             this._settings.bind('hotkey-prefix-text',
                                 this._builder.get_object('hotkey_prefix_combo'),
                                 'text',
                                 Gio.SettingsBindFlags.DEFAULT);
+
+            this._settings.connect('changed::hotkey-prefix-text', Lang.bind(this, function() {checkHotkeyPrefix(this._settings);}));
 
             this._builder.get_object('hotkey_prefix_combo').set_active_id(this._settings.get_string('hotkey-prefix-text'));
 
@@ -461,28 +599,38 @@ const Settings = new Lang.Class({
                                 'active-id',
                                 Gio.SettingsBindFlags.DEFAULT);
 
-            this._settings.bind('hotkeys-overlay',
-                                this._builder.get_object('overlay_switch'),
-                                'active',
+            this._builder.get_object('overlay_combo').set_active_id(this._settings.get_string('hotkeys-overlay-combo'));
+
+            this._settings.bind('hotkeys-overlay-combo',
+                                this._builder.get_object('overlay_combo'),
+                                'active-id',
                                 Gio.SettingsBindFlags.DEFAULT);
+
             this._settings.bind('overlay-timeout',
                                 this._builder.get_object('timeout_spinbutton'),
                                 'value',
                                 Gio.SettingsBindFlags.DEFAULT);
-            this._settings.bind('hotkeys-overlay',
-                                this._builder.get_object('timeout_spinbutton'),
-                                'sensitive',
-                                Gio.SettingsBindFlags.DEFAULT);
+            if (this._settings.get_string('hotkeys-overlay-combo') !== 'TEMPORARILY') {
+                this._builder.get_object('timeout_spinbutton').set_sensitive(false);
+            }
+
+            this._settings.connect('changed::hotkeys-overlay-combo', Lang.bind(this, function() {
+                if (this._settings.get_string('hotkeys-overlay-combo') !== 'TEMPORARILY')
+                    this._builder.get_object('timeout_spinbutton').set_sensitive(false);
+                else
+                    this._builder.get_object('timeout_spinbutton').set_sensitive(true);
+            }));
 
             this._settings.bind('shortcut-text',
                                 this._builder.get_object('shortcut_entry'),
                                 'text',
                                 Gio.SettingsBindFlags.DEFAULT);
+            this._settings.connect('changed::shortcut-text', Lang.bind(this, function() {setShortcut(this._settings);}));
 
             dialog.connect('response', Lang.bind(this, function(dialog, id) {
                 if (id == 1) {
                     // restore default settings for the relevant keys
-                    let keys = ['hotkey-prefix-text', 'shortcut-text', 'hotkeys-overlay', 'overlay-timeout'];
+                    let keys = ['hotkey-prefix-text', 'shortcut-text', 'hotkeys-overlay-combo', 'overlay-timeout'];
                     keys.forEach(function(val) {
                         this._settings.set_value(val, this._settings.get_default_value(val));
                     }, this);
@@ -560,12 +708,12 @@ const Settings = new Lang.Class({
             this._builder.get_object('leave_timeout_spinbutton').connect('value-changed', Lang.bind (this, function(widget) {
                 this._settings.set_int('leave-timeout', widget.get_value());
             }));
-
+            
             dialog.connect('response', Lang.bind(this, function(dialog, id) {
                 if (id == 1) {
-                    // restore default settings
+                    // restore default settings  
                     this._settings.set_value('leave-timeout', this._settings.get_default_value('leave-timeout'));
-                    this._builder.get_object('leave_timeout_spinbutton').set_value(this._settings.get_int('leave-timeout'));
+                    this._builder.get_object('leave_timeout_spinbutton').set_value(this._settings.get_int('leave-timeout'));                
                 } else {
                     // remove the settings box so it doesn't get destroyed;
                     dialog.get_content_area().remove(box);
@@ -771,6 +919,15 @@ function init() {
 function buildPrefsWidget() {
     let settings = new Settings();
     let widget = settings.widget;
+
+    // I'd like the scrolled window to default to a size large enough to show all without scrolling, if it fits on the screen
+    // But, it doesn't seem possible, so I'm setting a minimum size if there seems to be enough screen real estate
     widget.show_all();
+    let viewport = settings.viewport;
+    let viewportSize = viewport.size_request();
+    let screenHeight = widget.get_screen().get_height();
+    if(viewportSize.height < (screenHeight - (screenHeight * .2)))
+        widget.set_size_request(viewportSize.width, viewportSize.height + (viewportSize.height * .05));   
+    
     return widget;
 }
